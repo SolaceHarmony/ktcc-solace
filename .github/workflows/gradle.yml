@@ -8,11 +8,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v1
-    - name: Set up JDK 1.8
-      uses: actions/setup-java@v1
-      with:
-        java-version: 1.8
+    - { uses: actions/checkout@v4 }
+    - { name: Set up JDK, uses: actions/setup-java@v4, with: { distribution: "temurin", java-version: "21" } }
+    - { name: Prepare Gradle, uses: gradle/actions/setup-gradle@d9c87d481d55275bb5441eef3fe0e46805f9ef70 } # https://github.com/gradle/actions/releases/tag/v3.5.0
     - name: Build with Gradle
       #run: ./gradlew -s -i check
       run: ./gradlew -s -i jvmTest

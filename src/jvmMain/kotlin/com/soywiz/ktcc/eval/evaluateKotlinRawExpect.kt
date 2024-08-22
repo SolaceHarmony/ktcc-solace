@@ -92,7 +92,7 @@ object JvmCompile {
             noReflect = true
             //skipRuntimeVersionCheck = true
             reportPerf = true
-            useIR = true
+            //useIR = true
         }
         //output.deleteOnExit()
         execImpl(

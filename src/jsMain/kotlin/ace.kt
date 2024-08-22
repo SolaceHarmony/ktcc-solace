@@ -8,10 +8,13 @@ data class AceCompletion(
         val score: Int
 )
 
-data class Pos(val row: Int, val column: Int)
+external interface Pos {
+    val row: Int
+    val column: Int
+}
 
-val Pos.row0 get() = row
-val Pos.row1 get() = row + 1
+val Pos.row0: Int get() = row
+val Pos.row1: Int get() = row + 1
 
 external interface AceCompleter {
     fun getCompletions(editor: Editor, session: EditSession, pos: Pos, prefix: String, callback: (unk: Any?, completions: Array<AceCompletion>) -> Unit)

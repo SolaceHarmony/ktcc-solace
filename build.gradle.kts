@@ -1,60 +1,28 @@
 import org.gradle.api.tasks.testing.logging.TestLogEvent
-import org.jetbrains.kotlin.gradle.plugin.KotlinDependencyHandler
+import org.jetbrains.kotlin.fir.resolve.transformers.body.resolve.approximateDeclarationType
+import org.jetbrains.kotlin.gradle.dsl.JsModuleKind
 import org.jetbrains.kotlin.gradle.plugin.KotlinTarget
 import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinJsCompilation
 import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinJvmCompilation
 import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget
-import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinOnlyTarget
-import org.jetbrains.kotlin.gradle.tasks.KotlinJsDce
-import org.jetbrains.kotlin.konan.properties.*
-import org.jetbrains.kotlin.konan.util.*
-
-//buildscript {
-//    repositories {
-//        mavenLocal()
-//        mavenCentral()
-//        maven { url = uri("https://kotlin.bintray.com/kotlin-dev") }
-//    }
-//    val kotlinVersion = "1.3.50-release-105"
-//    dependencies {
-//        classpath("org.jetbrains.kotlin.jvm:org.jetbrains.kotlin.jvm.gradle.plugin:$kotlinVersion")
-//    }
-//}
+import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
 plugins {
-    kotlin("multiplatform") version "1.6.21" apply true
-    //kotlin("multiplatform") version "1.3.41" apply true
-    //kotlin("multiplatform") version "1.3.50-release-105"
-    //id("kotlinx-serialization") version "1.3.41"
+    kotlin("multiplatform") version "2.0.20-RC2" apply true
+    id("org.barfuin.gradle.taskinfo") version "2.2.0"
     idea
 }
 
-//apply(plugin = "org.jetbrains.kotlin.multiplatform")
-apply(plugin = "kotlin-dce-js")
+//project.gradle.taskGraph.whenReady { println(project.gradle.taskGraph.allTasks) }
 
 repositories {
     mavenLocal()
     mavenCentral()
-    maven { url = uri("https://kotlin.bintray.com/kotlinx") }
-    //maven { url = uri("https://kotlin.bintray.com/kotlin-dev") }
 }
-
-
-fun KotlinOnlyTarget<*>.mainDependencies(block: KotlinDependencyHandler.() -> Unit) {
-    this.compilations["main"].dependencies(block)
-}
-
-fun KotlinOnlyTarget<*>.testDependencies(block: KotlinDependencyHandler.() -> Unit) {
-    this.compilations["test"].dependencies(block)
-}
-
-operator fun File.get(key: String) = File(this, key)
-var File.textContent get() = this.readText(); set(value) = run { this.writeText(value) }
 
 //val jsIndex = file("src/jsMain/resources/index.html")
 //jsIndex.textContent = jsIndex.textContent.replace(Regex("Kotlin C Compiler WIP Version ([\\d\\.]*)"), "Kotlin C Compiler WIP Version $version")
 
-file("build/gen/kotlin/com/soywiz/ktcc/internal/version.kt").also { it.parentFile.mkdirs() }.textContent = "package com.soywiz.ktcc.internal\n\ninternal val KTCC_VERSION = \"$version\""
 //println(file("src/commonMain/kotlin/com/soywiz/ktcc/internal/version.kt").textContent)
 
 //fun KotlinTargetContainerWithPresetFunctions.common(callback: KotlinOnlyTarget<*>.() -> Unit) {
@@ -71,15 +39,14 @@ kotlin {
         }
     }
 
-    //metadata {
-    //    mainDependencies {
-    //        implementation("org.jetbrains.kotlin:kotlin-stdlib-common")
-    //    }
-    //    testDependencies {
-    //        implementation("org.jetbrains.kotlin:kotlin-test-annotations-common")
-    //        implementation("org.jetbrains.kotlin:kotlin-test-common")
-    //    }
-    //}
+    fun KotlinNativeTarget.configureNative() {
+        configureAll()
+        binaries {
+            executable()
+        }
+    }
+
+
 
     //common {
     //}
@@ -90,19 +57,12 @@ kotlin {
     js {
         configureAll()
         browser()
-        compilations.all {
-            kotlinOptions {
-                sourceMap = true
-                metaInfo = true
-                moduleKind = "umd"
-            }
-        }
-    }
-
-    fun KotlinNativeTarget.configureNative() {
-        configureAll()
-        binaries {
-            executable()
+        binaries.executable()
+        compilerOptions {
+            this.target = "es2015"
+            this.useEsClasses = true
+            sourceMap = true
+            moduleKind = JsModuleKind.MODULE_ES
         }
     }
 
@@ -112,14 +72,13 @@ kotlin {
         linuxX64 { configureNative() }
         mingwX64 { configureNative() }
 
-        sourceSets {
-            val nativeCommonMain = this.create("nativeCommonMain")
-            val nativeCommonTest = this.create("nativeCommonTest")
-
-            configure(listOf(this.getByName("macosX64Main"), this.getByName("macosArm64Main"), this.getByName("linuxX64Main"), this.getByName("mingwX64Main"))) {
-                dependsOn(nativeCommonMain)
-            }
-        }
+        //sourceSets {
+        //    val nativeMain = this.create("nativeMain")
+        //    val nativeTest = this.create("nativeTest")
+        //    configure(listOf(this.getByName("macosX64Main"), this.getByName("macosArm64Main"), this.getByName("linuxX64Main"), this.getByName("mingwX64Main"))) {
+        //        dependsOn(nativeMain)
+        //    }
+        //}
     }
 
     sourceSets["commonMain"].kotlin.srcDir("build/gen")
@@ -148,52 +107,73 @@ val mainClassName = "com.soywiz.ktcc.cli.CLI"
 
 val jsCompilations = kotlin.targets["js"].compilations
 
-val GENERATED_DO_NOT_MODIFY = "// GENERATED. Do not modify"
+open class GenerateSourcesTask : DefaultTask() {
+    private val rootDir = project.rootDir
+    private val version = project.version
 
-fun String.escapeTripleQuote(): String {
-    return this.replace("$", "\${DOLLAR}").replace("\"\"\"", "\${TRIPLET}")
-}
+    private val GENERATED_DO_NOT_MODIFY = "// GENERATED. Do not modify"
 
-fun generateIncludes(): String {
-    val lines = arrayListOf<String>()
-    lines += GENERATED_DO_NOT_MODIFY
-    lines += "package com.soywiz.ktcc.headers"
-    lines += "private val DOLLAR = '$'"
-    lines += "private val TRIPLET = \"\\\"\\\"\\\"\""
-    lines += "val CStdIncludes = CIncludes().apply {"
-
-    val includeDir = File(rootDir, "include").absoluteFile
-    for (file in includeDir.walkTopDown().toList().sortedBy { it.absolutePath }) {
-        if (!file.name.endsWith(".h")) continue
-        val ktFile = File(file.absolutePath.removeSuffix(".h") + ".kt")
-        val cFile = File(file.absolutePath.removeSuffix(".h") + ".c")
-        //println(file)
-        lines += buildString {
-            append("FILE(\"${file.relativeTo(includeDir).path}\", \"\"\"${file.readText().escapeTripleQuote()}\"\"\"")
-            if (ktFile.exists()) append(", ktImpl = \"\"\"${ktFile.readText().escapeTripleQuote()}\"\"\"")
-            if (cFile.exists()) append(", cImpl = \"\"\"${cFile.readText().escapeTripleQuote()}\"\"\"")
-            append(")")
-        }
+    private fun String.escapeTripleQuote(): String {
+        return this.replace("$", "\${DOLLAR}").replace("\"\"\"", "\${TRIPLET}")
     }
 
-    lines += "}.map.toMap()"
-    lines += ""
-    return lines.joinToString("\n")
+    private operator fun File.get(key: String) = File(this, key)
+    private var File.textContent get() = this.readText(); set(value) = run { this.writeText(value) }
+
+    fun generateIncludes(): String {
+        val lines = arrayListOf<String>()
+        lines += GENERATED_DO_NOT_MODIFY
+        lines += "package com.soywiz.ktcc.headers"
+        lines += "private val DOLLAR = '$'"
+        lines += "private val TRIPLET = \"\\\"\\\"\\\"\""
+        lines += "val CStdIncludes = CIncludes().apply {"
+
+        val includeDir = File(rootDir, "include").absoluteFile
+        for (file in includeDir.walkTopDown().toList().sortedBy { it.absolutePath }) {
+            if (!file.name.endsWith(".h")) continue
+            val ktFile = File(file.absolutePath.removeSuffix(".h") + ".kt")
+            val cFile = File(file.absolutePath.removeSuffix(".h") + ".c")
+            //println(file)
+            lines += buildString {
+                append("FILE(\"${file.relativeTo(includeDir).path}\", \"\"\"${file.readText().escapeTripleQuote()}\"\"\"")
+                if (ktFile.exists()) append(", ktImpl = \"\"\"${ktFile.readText().escapeTripleQuote()}\"\"\"")
+                if (cFile.exists()) append(", cImpl = \"\"\"${cFile.readText().escapeTripleQuote()}\"\"\"")
+                append(")")
+            }
+        }
+
+        lines += "}.map.toMap()"
+        lines += ""
+        return lines.joinToString("\n")
+    }
+
+    @TaskAction
+    fun action() {
+        File(rootDir, "build/gen/kotlin/com/soywiz/ktcc/internal/version.kt").also { it.parentFile.mkdirs() }.textContent = "package com.soywiz.ktcc.internal\n\ninternal val KTCC_VERSION = \"$version\""
+        File(rootDir, "build/gen/kotlin/com/soywiz/ktcc/headers/CStdIncludesGenerated.kt").also { it.parentFile.mkdirs() }.writeText(generateIncludes())
+        File(rootDir, "build/gen/kotlin/com/soywiz/ktcc/gen/KotlinGen.kt").also { it.parentFile.mkdirs() }.writeText(
+            "$GENERATED_DO_NOT_MODIFY\n" +
+                    "package com.soywiz.ktcc.gen\n\n" +
+                    "private val DOLLAR = '$'\n" +
+                    "private val TRIPLET = \"\\\"\\\"\\\"\"\n" +
+                    "val KotlinRuntime = \"\"\"${File(rootDir, "src/commonMain/kotlin/Runtime.kt").readText().escapeTripleQuote()}\"\"\"\n" +
+                    "val KotlinRuntimeJvm = \"\"\"${File(rootDir, "src/jvmMain/kotlin/RuntimeJvm.kt").readText().escapeTripleQuote()}\"\"\"\n"
+        )
+    }
 }
 
-File(rootDir, "build/gen/kotlin/com/soywiz/ktcc/headers/CStdIncludesGenerated.kt").also { it.parentFile.mkdirs() }.writeText(generateIncludes())
-File(rootDir, "build/gen/kotlin/com/soywiz/ktcc/gen/KotlinGen.kt").also { it.parentFile.mkdirs() }.writeText(
-    "$GENERATED_DO_NOT_MODIFY\n" +
-        "package com.soywiz.ktcc.gen\n\n" +
-        "private val DOLLAR = '$'\n" +
-        "private val TRIPLET = \"\\\"\\\"\\\"\"\n" +
-        "val KotlinRuntime = \"\"\"${File(rootDir, "src/commonMain/kotlin/Runtime.kt").readText().escapeTripleQuote()}\"\"\"\n" +
-        "val KotlinRuntimeJvm = \"\"\"${File(rootDir, "src/jvmMain/kotlin/RuntimeJvm.kt").readText().escapeTripleQuote()}\"\"\"\n"
-)
-
 tasks {
-    val runDceJsKotlin = named<KotlinJsDce>("runDceJsKotlin").get()
-    create<Jar>("fatJar") {
+    val generateSources by creating(GenerateSourcesTask::class)
+
+    //val runDceJsKotlin = named<KotlinJsDce>("runDceJsKotlin").get()
+    val jvmJar by getting(Jar::class)
+
+    val compileKotlinJvm by getting(KotlinCompile::class)
+
+    compileKotlinJvm.dependsOn(generateSources)
+    //println("compileKotlinJvm=${compileKotlinJvm::class}")
+
+    val fatJar by creating(Jar::class) {
         duplicatesStrategy = org.gradle.api.file.DuplicatesStrategy.INCLUDE
         archiveBaseName.set("${project.name}-all")
         //archiveVersion.set(null as String?)
@@ -204,52 +184,46 @@ tasks {
             attributes("Main-Class" to mainClassName)
         }
 
-        afterEvaluate {
-            for (it in (kotlin.targets["jvm"].compilations["main"] as KotlinJvmCompilation).runtimeDependencyFiles) {
-                from(if (it.isDirectory) it else zipTree(it))
-            }
-        }
+        //println(configurations.names.toList())
+        from(provider { configurations["jvmRuntimeClasspath"].map { if (it.isDirectory) it else zipTree(it) } })
 
-        with(named<Jar>("jvmJar").get())
+        with(jvmJar)
     }
 
-    val jsWebResourcesDce = create<Copy>("jsWebResourcesDce") {
-        dependsOn(runDceJsKotlin)
-        into(rootDir["docs"])
-        includeEmptyDirs = false
-        from(kotlin.sourceSets["jsMain"].resources)
-        from(kotlin.sourceSets["commonMain"].resources)
-    }
+    //val jsWebResourcesDce by creating(Copy::class) {
+    //    dependsOn(runDceJsKotlin)
+    //    into(file("docs"))
+    //    includeEmptyDirs = false
+    //    from(kotlin.sourceSets["jsMain"].resources)
+    //    from(kotlin.sourceSets["commonMain"].resources)
+    //}
 
-    val jsWebResources = create<Copy>("jsWebResources") {
+    val jsWebResources by creating(Copy::class) {
         dependsOn("jsMainClasses")
-        into(rootDir["docs"])
+        into(file("docs"))
         includeEmptyDirs = false
         from(kotlin.sourceSets["jsMain"].resources)
         from(kotlin.sourceSets["commonMain"].resources)
     }
 
+    //val jsWebDce by creating(Copy::class) {
+    //    dependsOn(jsWebResourcesDce)
+    //    into(file("docs"))
+    //    includeEmptyDirs = false
+    //    exclude("**/*.kjsm", "**/*.kotlin_metadata", "**/*.kotlin_module", "**/*.MF", "**/*.meta.js", "**/*.map")
+    //    from(named("compileProductionExecutableKotlinJs").get().outputs)
+    //}
 
-    create<Copy>("jsWebDce") {
-        dependsOn(jsWebResourcesDce)
-        into(rootDir["docs"])
-        includeEmptyDirs = false
-        exclude("**/*.kjsm", "**/*.kotlin_metadata", "**/*.kotlin_module", "**/*.MF", "**/*.meta.js", "**/*.map")
-        afterEvaluate {
-            from(runDceJsKotlin.destinationDir)
-        }
-    }
-    create<Copy>("jsWeb") {
+    val jsWeb by creating(Copy::class) {
         dependsOn(jsWebResources)
-        into(rootDir["docs"])
+        into(file("docs"))
         includeEmptyDirs = false
         exclude("**/*.kjsm", "**/*.kotlin_metadata", "**/*.kotlin_module", "**/*.MF", "**/*.meta.js", "**/*.map")
-        from(jsCompilations["main"].output.allOutputs)
-        afterEvaluate {
-            for (f in (jsCompilations["main"] as KotlinJsCompilation).runtimeDependencyFiles) if (f.exists() && !f.isDirectory()) from(zipTree(f.absolutePath))
-        }
+        //from(named("compileProductionExecutableKotlinJs").get().outputs)
+        from(named("compileDevelopmentExecutableKotlinJs").get().outputs)
     }
-    create<Task>("buildDockerImage") {
+
+    val buildDockerImage by creating {
         afterEvaluate {
             dependsOn("linkReleaseExecutableLinuxX64")
         }
@@ -257,11 +231,19 @@ tasks {
             exec { commandLine = listOf("docker", "build", ".", "-t", "soywiz/ktcc:latest") }
         }
     }
-    create<Task>("buildDockerImageAndPublish") {
+    val buildDockerImageAndPublish by creating {
         dependsOn("buildDockerImage")
         doLast {
             exec { commandLine = listOf("docker", "push", "soywiz/ktcc:latest") }
         }
+    }
+    project.tasks.withType(ProcessResources::class) {
+        this.dependsOn(generateSources)
+        //println("resources=$this : ${this::class}")
+    }
+
+    val prepare by creating {
+        dependsOn(generateSources)
     }
 }
 

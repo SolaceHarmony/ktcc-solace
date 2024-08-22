@@ -1,8 +1,8 @@
+@file:OptIn(ExperimentalForeignApi::class, UnsafeNumber::class)
+
 package com.soywiz.ktcc.internal
 
-import kotlinx.cinterop.addressOf
-import kotlinx.cinterop.convert
-import kotlinx.cinterop.usePinned
+import kotlinx.cinterop.*
 import platform.posix.*
 
 actual fun readFile(name: String): ByteArray? {

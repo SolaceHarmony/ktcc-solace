@@ -17,11 +17,23 @@ val includeRuntimeNode by lazy { document.getElementById("include-runtime").unsa
 
 val debug get() = debugNode.checked
 
+fun onReady(block: () -> Unit) {
+    if (document.readyState != DocumentReadyState.LOADING) {
+        block()
+    } else {
+        document.addEventListener("DOMContentLoaded", { e ->
+            block()
+        })
+    }
+}
+
+//@JsExport
+//@JsName("main")
 fun main(args: Array<String>) {
     //println("// args=${args.toList()}")
     //CLI.main(args)
     println("Waiting for DOMContentLoaded...")
-    document.addEventListener("DOMContentLoaded", { e ->
+    onReady {
         println("READY")
 
         document.getElementById("version")?.textContent = KTCC.VERSION
@@ -248,7 +260,7 @@ fun main(args: Array<String>) {
         window.localStorage[""]
 
         compile()
-    })
+    }
 }
 
 open class CompilationRef {
