@@ -5,7 +5,7 @@ A C Compiler written in Multiplatform Kotlin (JVM, JS and Native).
 [![Actions Status](https://github.com/soywiz/ktcc/workflows/Java%20CI/badge.svg)](https://github.com/soywiz/ktcc/actions)
 
 
-## [Online live editor](https://korlibs.soywiz.com/ktcc/) ([Video](https://youtu.be/r-yeEjJ0Ld0))
+## [Online live editor](https://korlibs.github.io/ktcc/) ([Video](https://youtu.be/r-yeEjJ0Ld0))
 
 ## [MASTER ONLINE LIVE DEMO](https://korlibs.github.io/ktcc/)
 
@@ -21,7 +21,7 @@ Using:
 * Provided as JVM library and CLI tool.
 * Provided as native executable (linux, mac and windows).
 * Provided as [docker image](https://cloud.docker.com/repository/docker/soywiz/ktcc/) with the compiler native executable. Just run latest uploaded version with: `docker run --rm "-v$PWD:/data" soywiz/ktcc $*`
-* Provided as JavaScript library and [pure client-side online service](https://soywiz.github.io/ktcc/). It autocompletes and generates Kotlin code on the fly on your browser.
+* Provided as JavaScript library and [pure client-side online service](https://korlibs.github.io/ktcc/). It autocompletes and generates Kotlin code on the fly on your browser.
 
 CLI usage:
 
