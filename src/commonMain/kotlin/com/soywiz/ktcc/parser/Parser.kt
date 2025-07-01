@@ -643,40 +643,72 @@ fun ProgramParser.tryUnaryExpression(): Expr? = tag {
     }
 }
 
+// Keep track of recursion depth to prevent stack overflow
+private var castExpressionRecursionDepth = 0
+private const val MAX_CAST_EXPRESSION_RECURSION_DEPTH = 10
+
 fun ProgramParser.tryCastExpression(): Expr? = tag {
-    if (peek() == "(") {
-        try {
-            restoreOnNull {
+    // Check if we've exceeded the maximum recursion depth
+    if (castExpressionRecursionDepth > MAX_CAST_EXPRESSION_RECURSION_DEPTH) {
+        return tryUnaryExpression()
+    }
+
+    try {
+        castExpressionRecursionDepth++
+
+        if (peek() == "(") {
+            try {
+                val savedPos = pos
+
                 expect("(")
-                val tname = tryTypeName() ?: return@restoreOnNull null
+
+                // Quick check for common tokens that indicate this is not a type name
+                val currentToken = peek()
+                if (currentToken == "*" || currentToken == "}" || currentToken == ";" || 
+                    currentToken == "(" || currentToken == "=" || currentToken == "[" ||
+                    currentToken.toIntOrNull() != null || currentToken in binaryOperators ||
+                    currentToken in arrayOf(">=", "<=", "==", "!=", ">", "<")) {
+
+                    // This is likely not a cast expression, restore position and try as unary expression
+                    pos = savedPos
+                    return@tag tryUnaryExpression()
+                }
+
+                val tname = tryTypeName()
+                if (tname == null) {
+                    // Not a type name, restore position and try as unary expression
+                    pos = savedPos
+                    return@tag tryUnaryExpression()
+                }
 
                 // Check if the next token is a comparison operator or other binary operator
                 // If it is, this is not a cast expression but a parenthesized expression
                 if (peek() in binaryOperators || peek() in arrayOf(">=", "<=", "==", "!=", ">", "<")) {
-                    return@restoreOnNull null
+                    // Not a cast expression, restore position and try as unary expression
+                    pos = savedPos
+                    return@tag tryUnaryExpression()
                 }
 
                 expect(")")
                 val expr = tryCastExpression()
-                val ftype = tname.specifiers.toFinalType().withDeclarator(tname.abstractDecl)
-                CastExpr(expr!!, ftype)
-            } ?: tryUnaryExpression()
-        } catch (e: Exception) {
-            // If we encounter an error while parsing a cast expression in a preprocessor directive,
-            // fall back to treating it as a parenthesized expression
-            if (e.message?.contains("Expected") == true) {
-                // Restore position to the start of the expression
-                pos = pos - 1
-                while (pos > 0 && tokens[pos].str != "(") pos--
-                if (pos > 0) pos--
+                if (expr == null) {
+                    // No expression after the cast, restore position and try as unary expression
+                    pos = savedPos
+                    return@tag tryUnaryExpression()
+                }
 
-                // Try parsing as a parenthesized expression
+                val ftype = tname.specifiers.toFinalType().withDeclarator(tname.abstractDecl)
+                CastExpr(expr, ftype)
+            } catch (e: Exception) {
+                // If we encounter an error while parsing a cast expression,
+                // fall back to treating it as a unary expression
                 return@tag tryUnaryExpression()
             }
-            throw e
+        } else {
+            tryUnaryExpression()
         }
-    } else {
-        tryUnaryExpression()
+    } finally {
+        castExpressionRecursionDepth--
     }
 }
 
@@ -982,8 +1014,26 @@ interface KeywordEnum {
 // (6.7.7) type-name:
 fun ProgramParser.typeName(): Node = tryTypeName() ?: TODO("typeName as $this")
 
+// Keep track of recursion depth to prevent stack overflow
+private var typeNameRecursionDepth = 0
+private const val MAX_TYPE_NAME_RECURSION_DEPTH = 10
+
 fun ProgramParser.tryTypeName(): TypeName? = tag {
+    // Check if we've exceeded the maximum recursion depth
+    if (typeNameRecursionDepth > MAX_TYPE_NAME_RECURSION_DEPTH) {
+        return null
+    }
+
     try {
+        typeNameRecursionDepth++
+
+        // Check for tokens that indicate this is not a type name
+        val currentToken = peek()
+        if (currentToken == "*" || currentToken == "}" || currentToken == ";" || 
+            currentToken == "(" || currentToken == "=" || currentToken == "[") {
+            return null
+        }
+
         val specifiers = declarationSpecifiers() ?: return null
         val absDecl = tryAbstractDeclarator()
         TypeName(specifiers, absDecl)
@@ -994,6 +1044,8 @@ fun ProgramParser.tryTypeName(): TypeName? = tag {
             return null
         }
         throw e
+    } finally {
+        typeNameRecursionDepth--
     }
 }
 
@@ -1070,61 +1122,63 @@ fun ProgramParser.declarationSpecifiers(sure: Boolean = false): ListTypeSpecifie
         inStructDecl = true
     }
 
+    // Check for tokens that indicate we're not in a declaration specifier context
+    val currentToken = peek()
+
+    // Early detection of pointer (*) token - this is not a declaration specifier
+    // but part of a declarator, so we should return a basic type
+    if (currentToken == "*") {
+        reportWarning("Found pointer (*) at start of declaration, assuming 'int'")
+        out.add(BasicTypeSpecifier(BasicTypeSpecifier.Kind.INT))
+        return ListTypeSpecifier(out)
+    }
+
+    // Early detection of closing brace (}) token - this is not a declaration specifier
+    // but the end of a struct/union/enum definition
+    if (currentToken == "}") {
+        reportWarning("Found closing brace (}) at start of declaration, assuming 'int'")
+        out.add(BasicTypeSpecifier(BasicTypeSpecifier.Kind.INT))
+        return ListTypeSpecifier(out)
+    }
+
     while (true) {
         if (eof) error("eof found")
-        try {
-            // Check for common tokens that might indicate the end of declaration specifiers
-            val currentToken = peek()
 
-            // Only break on these tokens if we already have some specifiers
-            // This allows for pointer types (*) to be part of declarations
-            if (out.isNotEmpty() && (currentToken == ";" || currentToken == "(" || 
-                currentToken == "=" || currentToken == "[")) {
-                // These tokens typically indicate we're done with declaration specifiers
+        // Check for common tokens that might indicate the end of declaration specifiers
+        val currentToken = peek()
+
+        // Only break on these tokens if we already have some specifiers
+        if (out.isNotEmpty() && (currentToken == ";" || currentToken == "(" || 
+            currentToken == "=" || currentToken == "[")) {
+            break
+        }
+
+        // Special handling for pointer (*) - always break if we already have specifiers
+        // or if we're at the start of a declaration (pointer to a type)
+        if (currentToken == "*") {
+            if (out.isNotEmpty()) {
+                break
+            } else {
+                // If we're at the start and see a pointer, assume int* and break
+                reportWarning("Found pointer (*) in declaration specifiers, assuming 'int'")
+                out.add(BasicTypeSpecifier(BasicTypeSpecifier.Kind.INT))
                 break
             }
+        }
 
-            // Special handling for pointer (*) - only break if we're not in a typedef or
-            // if we already have specifiers (meaning * is part of the declarator, not the type)
-            if (currentToken == "*") {
-                // If we have specifiers already, the * is likely part of a declarator
-                if (out.isNotEmpty() && !inStructDecl) {
-                    break
-                }
-                // Otherwise, try to parse it as part of a pointer type
+        // Special handling for closing brace (}) - always break
+        if (currentToken == "}") {
+            if (out.isEmpty()) {
+                // If we're at the start and see a closing brace, assume int and break
+                reportWarning("Found closing brace (}) in declaration specifiers, assuming 'int'")
+                out.add(BasicTypeSpecifier(BasicTypeSpecifier.Kind.INT))
             }
+            break
+        }
 
-            // Special handling for closing brace (}) - only break if we're at the end of a struct/union/enum
-            // or if we're at the end of a function body
-            if (currentToken == "}") {
-                // If we're in a struct/union/enum definition, don't break
-                val prevTokens = tokens.subList(max(0, pos - 5), pos).map { it.str }
-
-                // Check if we're inside a struct/union/enum definition
-                val inDefinition = prevTokens.contains("{") || prevTokens.contains("struct") || 
-                                  prevTokens.contains("union") || prevTokens.contains("enum")
-
-                // Check if we're at the end of a field declaration in a struct
-                val isFieldEnd = prevTokens.contains(";") || prevTokens.contains(",")
-
-                // If we're not in a definition or we're at the end of a field, break
-                if (!inDefinition || isFieldEnd) {
-                    break
-                }
-
-                // If we're at the end of a struct/union/enum definition, we should continue
-                // to allow the closing brace to be properly handled
-            }
-
-            // Special handling for function pointer types in struct declarations
-            if (inStructDecl && currentToken == "(" && peekOutside(+1) == "*") {
-                // This is likely a function pointer declaration in a struct
-                // Don't break, let the declarator handle it
-            }
-
+        try {
             val spec = tryDeclarationSpecifier(hasTypedef, out.isNotEmpty(), sure) ?: break
             if (spec is StorageClassSpecifier && spec.kind == StorageClassSpecifier.Kind.TYPEDEF) hasTypedef = true
-            //if (spec is TypedefTypeSpecifier) break // @TODO: Check this!
             out += spec
             errorCount = 0 // Reset error count on successful parse
         } catch (e: Exception) {
@@ -1139,47 +1193,14 @@ fun ProgramParser.declarationSpecifiers(sure: Boolean = false): ListTypeSpecifie
                 break
             }
 
-            // If we're at the end of a block or statement, break out of the loop
-            val currentToken = peek()
-
-            // Only break on these tokens if we already have some specifiers
+            // Check if we should stop parsing declaration specifiers
             if (out.isNotEmpty() && (currentToken == ";" || currentToken == "(" || 
-                currentToken == "=" || currentToken == "[")) {
+                currentToken == "=" || currentToken == "[" || currentToken == "*")) {
                 break
             }
 
-            // Special handling for pointer (*) - only break if we're not in a typedef or
-            // if we already have specifiers
-            if (currentToken == "*") {
-                if (out.isNotEmpty() && !inStructDecl) {
-                    break
-                }
-            }
-
-            // Special handling for closing brace (})
             if (currentToken == "}") {
-                val prevTokens = tokens.subList(max(0, pos - 5), pos).map { it.str }
-
-                // Check if we're inside a struct/union/enum definition
-                val inDefinition = prevTokens.contains("{") || prevTokens.contains("struct") || 
-                                  prevTokens.contains("union") || prevTokens.contains("enum")
-
-                // Check if we're at the end of a field declaration in a struct
-                val isFieldEnd = prevTokens.contains(";") || prevTokens.contains(",")
-
-                // If we're not in a definition or we're at the end of a field, break
-                if (!inDefinition || isFieldEnd) {
-                    break
-                }
-
-                // If we're at the end of a struct/union/enum definition, we should continue
-                // to allow the closing brace to be properly handled
-            }
-
-            // Special handling for function pointer types in struct declarations
-            if (inStructDecl && currentToken == "(" && peekOutside(+1) == "*") {
-                // This is likely a function pointer declaration in a struct
-                // Don't break, let the declarator handle it
+                break
             }
 
             // Otherwise, skip this token and continue
