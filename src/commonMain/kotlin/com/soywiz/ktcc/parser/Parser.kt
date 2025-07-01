@@ -1129,18 +1129,54 @@ fun ProgramParser.declarationSpecifiers(sure: Boolean = false): ListTypeSpecifie
     when (currentToken) {
         // Pointer (*) token - this is part of a declarator, not a declaration specifier
         "*" -> {
-            reportWarning("Found pointer (*) at start of declaration, assuming 'int'")
-            out.add(BasicTypeSpecifier(BasicTypeSpecifier.Kind.INT))
+            // Instead of just warning, try to handle pointer declarations more intelligently
+            // Look ahead to see if this might be a function pointer declaration
+            val nextTokens = (1..5).map { peekOutside(it) }.takeWhile { it != null && it != ";" }
+
+            // Check for function pointer pattern: * identifier ( ... )
+            if (nextTokens.size >= 3 && Id.isValid(nextTokens[0]) && nextTokens[1] == "(") {
+                // This looks like a function pointer declaration
+                // Add a void type as the base type for the pointer
+                out.add(BasicTypeSpecifier(BasicTypeSpecifier.Kind.VOID))
+                return ListTypeSpecifier(out)
+            }
+
+            // Check for simple pointer pattern: * identifier
+            if (nextTokens.isNotEmpty() && Id.isValid(nextTokens[0])) {
+                // This looks like a simple pointer declaration
+                // Add a void type as the base type for the pointer
+                out.add(BasicTypeSpecifier(BasicTypeSpecifier.Kind.VOID))
+                return ListTypeSpecifier(out)
+            }
+
+            // Default fallback
+            reportWarning("Found pointer (*) at start of declaration, assuming 'void'")
+            out.add(BasicTypeSpecifier(BasicTypeSpecifier.Kind.VOID))
             return ListTypeSpecifier(out)
         }
         // Closing brace (}) token - this is the end of a struct/union/enum definition
         "}" -> {
+            // If we're in a struct declaration, this is expected
+            if (inStructDecl) {
+                // Just return null to indicate end of struct declaration
+                return null
+            }
+
+            // Otherwise, assume int and continue
             reportWarning("Found closing brace (}) at start of declaration, assuming 'int'")
             out.add(BasicTypeSpecifier(BasicTypeSpecifier.Kind.INT))
             return ListTypeSpecifier(out)
         }
         // Other tokens that might indicate we're not in a declaration specifier context
         ")", "]", "," -> {
+            // Check if we're in a parameter list or array declaration
+            if (prevTokens.contains("(") || prevTokens.contains("[")) {
+                // This is expected in parameter lists or array declarations
+                // Just return null to indicate end of declaration
+                return null
+            }
+
+            // Otherwise, assume int and continue
             reportWarning("Found unexpected token '$currentToken' at start of declaration, assuming 'int'")
             out.add(BasicTypeSpecifier(BasicTypeSpecifier.Kind.INT))
             return ListTypeSpecifier(out)
@@ -1162,8 +1198,15 @@ fun ProgramParser.declarationSpecifiers(sure: Boolean = false): ListTypeSpecifie
 
             // If we have no specifiers yet, add a default int type
             if (out.isEmpty()) {
-                reportWarning("No valid declaration specifiers found before '$currentToken', assuming 'int'")
-                out.add(BasicTypeSpecifier(BasicTypeSpecifier.Kind.INT))
+                // Choose appropriate default type based on context
+                if (currentToken == "*") {
+                    // For pointers, void is often a better default
+                    reportWarning("No valid declaration specifiers found before '$currentToken', assuming 'void'")
+                    out.add(BasicTypeSpecifier(BasicTypeSpecifier.Kind.VOID))
+                } else {
+                    reportWarning("No valid declaration specifiers found before '$currentToken', assuming 'int'")
+                    out.add(BasicTypeSpecifier(BasicTypeSpecifier.Kind.INT))
+                }
             }
             break
         }
@@ -1199,8 +1242,15 @@ fun ProgramParser.declarationSpecifiers(sure: Boolean = false): ListTypeSpecifie
 
                 // If we have no specifiers yet, add a default int type
                 if (out.isEmpty()) {
-                    reportWarning("No valid declaration specifiers found before '$currentToken', assuming 'int'")
-                    out.add(BasicTypeSpecifier(BasicTypeSpecifier.Kind.INT))
+                    // Choose appropriate default type based on context
+                    if (currentToken == "*") {
+                        // For pointers, void is often a better default
+                        reportWarning("No valid declaration specifiers found before '$currentToken', assuming 'void'")
+                        out.add(BasicTypeSpecifier(BasicTypeSpecifier.Kind.VOID))
+                    } else {
+                        reportWarning("No valid declaration specifiers found before '$currentToken', assuming 'int'")
+                        out.add(BasicTypeSpecifier(BasicTypeSpecifier.Kind.INT))
+                    }
                 }
                 break
             }
