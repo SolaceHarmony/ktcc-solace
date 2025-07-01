@@ -1231,10 +1231,11 @@ fun ProgramParser.tryDeclarationSpecifier(hasTypedef: Boolean, hasMoreSpecifiers
         // that don't affect the actual type
         v -> when {
             // Skip compiler-specific or library-specific macros and attributes
-            // This is a more general approach that doesn't rely on zlib-specific patterns
-            v.startsWith("Z") || v.startsWith("_Z") || v.endsWith("INTERNAL") || 
-            v == "FAR" || v == "ZEXPORT" || v == "ZEXTERN" || v == "ZEXPORTVA" || 
-            v.startsWith("__") || v.endsWith("__") -> {
+            // Using a general approach that works for any library
+            v.startsWith("__") || v.endsWith("__") || v.endsWith("INTERNAL") || 
+            v == "FAR" || v.contains("EXPORT") || v.contains("EXTERN") || 
+            v.startsWith("_") && v[1].isUpperCase() || // Common pattern for library macros (_Z, _WIN, etc.)
+            v.length >= 2 && v[0].isUpperCase() && v[1].isUpperCase() -> { // All-caps macros
                 // Skip these macros and continue parsing
                 read() // Consume the macro
                 // Try to parse the next token as a declaration specifier
@@ -1979,9 +1980,12 @@ fun ProgramParser.functionDefinition(): FuncDeclaration = tag {
     while (!eof) {
         val token = peek()
         // Skip compiler/library-specific macros, type qualifiers, and storage class specifiers
-        if (token.startsWith("Z") || token.endsWith("INTERNAL") || 
+        // Using a general approach that works for any library
+        if (token.startsWith("__") || token.endsWith("__") || token.endsWith("INTERNAL") || 
             token == "FAR" || token.endsWith("_const") || token == "local" || 
-            token == "extern" || token == "static" || token == "ZEXTERN" || token == "ZEXPORT") {
+            token == "extern" || token == "static" || token.contains("EXPORT") || token.contains("EXTERN") ||
+            token.startsWith("_") && token.length > 1 && token[1].isUpperCase() || // Common pattern for library macros
+            token.length >= 2 && token[0].isUpperCase() && token[1].isUpperCase()) { // All-caps macros
             skippedTokens.add(read())
         } else {
             break
