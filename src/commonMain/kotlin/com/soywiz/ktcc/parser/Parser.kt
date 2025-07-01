@@ -1125,20 +1125,26 @@ fun ProgramParser.declarationSpecifiers(sure: Boolean = false): ListTypeSpecifie
     // Check for tokens that indicate we're not in a declaration specifier context
     val currentToken = peek()
 
-    // Early detection of pointer (*) token - this is not a declaration specifier
-    // but part of a declarator, so we should return a basic type
-    if (currentToken == "*") {
-        reportWarning("Found pointer (*) at start of declaration, assuming 'int'")
-        out.add(BasicTypeSpecifier(BasicTypeSpecifier.Kind.INT))
-        return ListTypeSpecifier(out)
-    }
-
-    // Early detection of closing brace (}) token - this is not a declaration specifier
-    // but the end of a struct/union/enum definition
-    if (currentToken == "}") {
-        reportWarning("Found closing brace (}) at start of declaration, assuming 'int'")
-        out.add(BasicTypeSpecifier(BasicTypeSpecifier.Kind.INT))
-        return ListTypeSpecifier(out)
+    // Early detection of problematic tokens that are not declaration specifiers
+    when (currentToken) {
+        // Pointer (*) token - this is part of a declarator, not a declaration specifier
+        "*" -> {
+            reportWarning("Found pointer (*) at start of declaration, assuming 'int'")
+            out.add(BasicTypeSpecifier(BasicTypeSpecifier.Kind.INT))
+            return ListTypeSpecifier(out)
+        }
+        // Closing brace (}) token - this is the end of a struct/union/enum definition
+        "}" -> {
+            reportWarning("Found closing brace (}) at start of declaration, assuming 'int'")
+            out.add(BasicTypeSpecifier(BasicTypeSpecifier.Kind.INT))
+            return ListTypeSpecifier(out)
+        }
+        // Other tokens that might indicate we're not in a declaration specifier context
+        ")", "]", "," -> {
+            reportWarning("Found unexpected token '$currentToken' at start of declaration, assuming 'int'")
+            out.add(BasicTypeSpecifier(BasicTypeSpecifier.Kind.INT))
+            return ListTypeSpecifier(out)
+        }
     }
 
     while (true) {
@@ -1147,30 +1153,16 @@ fun ProgramParser.declarationSpecifiers(sure: Boolean = false): ListTypeSpecifie
         // Check for common tokens that might indicate the end of declaration specifiers
         val currentToken = peek()
 
-        // Only break on these tokens if we already have some specifiers
-        if (out.isNotEmpty() && (currentToken == ";" || currentToken == "(" || 
-            currentToken == "=" || currentToken == "[")) {
-            break
-        }
+        // Break on tokens that indicate the end of declaration specifiers
+        if (currentToken == ";" || currentToken == "(" || 
+            currentToken == "=" || currentToken == "[" ||
+            currentToken == "*" || currentToken == "}" ||
+            currentToken == ")" || currentToken == "]" ||
+            currentToken == ",") {
 
-        // Special handling for pointer (*) - always break if we already have specifiers
-        // or if we're at the start of a declaration (pointer to a type)
-        if (currentToken == "*") {
-            if (out.isNotEmpty()) {
-                break
-            } else {
-                // If we're at the start and see a pointer, assume int* and break
-                reportWarning("Found pointer (*) in declaration specifiers, assuming 'int'")
-                out.add(BasicTypeSpecifier(BasicTypeSpecifier.Kind.INT))
-                break
-            }
-        }
-
-        // Special handling for closing brace (}) - always break
-        if (currentToken == "}") {
+            // If we have no specifiers yet, add a default int type
             if (out.isEmpty()) {
-                // If we're at the start and see a closing brace, assume int and break
-                reportWarning("Found closing brace (}) in declaration specifiers, assuming 'int'")
+                reportWarning("No valid declaration specifiers found before '$currentToken', assuming 'int'")
                 out.add(BasicTypeSpecifier(BasicTypeSpecifier.Kind.INT))
             }
             break
@@ -1190,16 +1182,26 @@ fun ProgramParser.declarationSpecifiers(sure: Boolean = false): ListTypeSpecifie
             // If we've had too many errors in a row, break out to avoid infinite loops
             if (errorCount >= maxErrors) {
                 reportWarning("Too many errors in declaration specifiers, giving up")
+                // If we have no specifiers yet, add a default int type
+                if (out.isEmpty()) {
+                    out.add(BasicTypeSpecifier(BasicTypeSpecifier.Kind.INT))
+                }
                 break
             }
 
-            // Check if we should stop parsing declaration specifiers
-            if (out.isNotEmpty() && (currentToken == ";" || currentToken == "(" || 
-                currentToken == "=" || currentToken == "[" || currentToken == "*")) {
-                break
-            }
+            // Check for tokens that definitely indicate we should stop parsing declaration specifiers
+            val currentToken = peek()
+            if (currentToken == ";" || currentToken == "(" || 
+                currentToken == "=" || currentToken == "[" ||
+                currentToken == "*" || currentToken == "}" ||
+                currentToken == ")" || currentToken == "]" ||
+                currentToken == ",") {
 
-            if (currentToken == "}") {
+                // If we have no specifiers yet, add a default int type
+                if (out.isEmpty()) {
+                    reportWarning("No valid declaration specifiers found before '$currentToken', assuming 'int'")
+                    out.add(BasicTypeSpecifier(BasicTypeSpecifier.Kind.INT))
+                }
                 break
             }
 
