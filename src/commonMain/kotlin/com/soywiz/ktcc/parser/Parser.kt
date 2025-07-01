@@ -1061,7 +1061,14 @@ fun ProgramParser.declarationSpecifiers(sure: Boolean = false): ListTypeSpecifie
     val out = arrayListOf<TypeSpecifier>()
     var hasTypedef = false
     var errorCount = 0
+    var inStructDecl = false // Flag to track if we're inside a struct declaration
     val maxErrors = 5 // Maximum number of errors before giving up
+
+    // Check if we're inside a struct declaration by looking at previous tokens
+    val prevTokens = tokens.subList(max(0, pos - 10), pos).map { it.str }
+    if (prevTokens.contains("struct") || prevTokens.contains("union")) {
+        inStructDecl = true
+    }
 
     while (true) {
         if (eof) error("eof found")
@@ -1081,7 +1088,7 @@ fun ProgramParser.declarationSpecifiers(sure: Boolean = false): ListTypeSpecifie
             // if we already have specifiers (meaning * is part of the declarator, not the type)
             if (currentToken == "*") {
                 // If we have specifiers already, the * is likely part of a declarator
-                if (out.isNotEmpty()) {
+                if (out.isNotEmpty() && !inStructDecl) {
                     break
                 }
                 // Otherwise, try to parse it as part of a pointer type
@@ -1091,12 +1098,28 @@ fun ProgramParser.declarationSpecifiers(sure: Boolean = false): ListTypeSpecifie
             // or if we're at the end of a function body
             if (currentToken == "}") {
                 // If we're in a struct/union/enum definition, don't break
-                val prevTokens = tokens.subList(max(0, pos - 3), pos).map { it.str }
-                if (!prevTokens.contains("{") && !prevTokens.contains("struct") && 
-                    !prevTokens.contains("union") && !prevTokens.contains("enum")) {
+                val prevTokens = tokens.subList(max(0, pos - 5), pos).map { it.str }
+
+                // Check if we're inside a struct/union/enum definition
+                val inDefinition = prevTokens.contains("{") || prevTokens.contains("struct") || 
+                                  prevTokens.contains("union") || prevTokens.contains("enum")
+
+                // Check if we're at the end of a field declaration in a struct
+                val isFieldEnd = prevTokens.contains(";") || prevTokens.contains(",")
+
+                // If we're not in a definition or we're at the end of a field, break
+                if (!inDefinition || isFieldEnd) {
                     break
                 }
-                // Otherwise, continue parsing
+
+                // If we're at the end of a struct/union/enum definition, we should continue
+                // to allow the closing brace to be properly handled
+            }
+
+            // Special handling for function pointer types in struct declarations
+            if (inStructDecl && currentToken == "(" && peekOutside(+1) == "*") {
+                // This is likely a function pointer declaration in a struct
+                // Don't break, let the declarator handle it
             }
 
             val spec = tryDeclarationSpecifier(hasTypedef, out.isNotEmpty(), sure) ?: break
@@ -1128,18 +1151,35 @@ fun ProgramParser.declarationSpecifiers(sure: Boolean = false): ListTypeSpecifie
             // Special handling for pointer (*) - only break if we're not in a typedef or
             // if we already have specifiers
             if (currentToken == "*") {
-                if (out.isNotEmpty()) {
+                if (out.isNotEmpty() && !inStructDecl) {
                     break
                 }
             }
 
             // Special handling for closing brace (})
             if (currentToken == "}") {
-                val prevTokens = tokens.subList(max(0, pos - 3), pos).map { it.str }
-                if (!prevTokens.contains("{") && !prevTokens.contains("struct") && 
-                    !prevTokens.contains("union") && !prevTokens.contains("enum")) {
+                val prevTokens = tokens.subList(max(0, pos - 5), pos).map { it.str }
+
+                // Check if we're inside a struct/union/enum definition
+                val inDefinition = prevTokens.contains("{") || prevTokens.contains("struct") || 
+                                  prevTokens.contains("union") || prevTokens.contains("enum")
+
+                // Check if we're at the end of a field declaration in a struct
+                val isFieldEnd = prevTokens.contains(";") || prevTokens.contains(",")
+
+                // If we're not in a definition or we're at the end of a field, break
+                if (!inDefinition || isFieldEnd) {
                     break
                 }
+
+                // If we're at the end of a struct/union/enum definition, we should continue
+                // to allow the closing brace to be properly handled
+            }
+
+            // Special handling for function pointer types in struct declarations
+            if (inStructDecl && currentToken == "(" && peekOutside(+1) == "*") {
+                // This is likely a function pointer declaration in a struct
+                // Don't break, let the declarator handle it
             }
 
             // Otherwise, skip this token and continue
@@ -1430,9 +1470,30 @@ fun ProgramParser.tryDeclarationSpecifier(hasTypedef: Boolean, hasMoreSpecifiers
 fun ProgramParser.tryPointer(): Pointer? = tag {
     var pointer: Pointer? = null
     while (true) {
-        pointer = if (peek() == "*") {
+        // Check for pointer token
+        if (peek() == "*") {
             expect("*")
-            Pointer(whileNotNull { tryTypeQualifier() }, pointer)
+            // Create a new pointer with any type qualifiers that follow
+            pointer = Pointer(whileNotNull { tryTypeQualifier() }, pointer)
+        } 
+        // Handle special case for function pointers in struct declarations
+        else if (peek() == "(" && peekOutside(+1) == "*") {
+            // This is likely a function pointer declaration in a struct
+            // We'll handle this by creating a special pointer type
+            expect("(")
+            expect("*")
+            // Collect any type qualifiers
+            val qualifiers = whileNotNull { tryTypeQualifier() }
+            // Check for closing parenthesis
+            if (peek() == ")") {
+                expect(")")
+                // Create a pointer with the collected qualifiers
+                pointer = Pointer(qualifiers, pointer)
+            } else {
+                // If no closing parenthesis, revert and break
+                reportWarning("Expected closing parenthesis for function pointer")
+                break
+            }
         } else {
             break
         }
@@ -1550,8 +1611,12 @@ fun ProgramParser.declarator(): Declarator = tryDeclarator()
     ?: throw ExpectException("Not a declarator at $this")
 
 fun ProgramParser.tryDeclarator(): Declarator? = tag {
+    // Check if we're inside a struct declaration by looking at previous tokens
+    val prevTokens = tokens.subList(max(0, pos - 10), pos).map { it.str }
+    val inStructDecl = prevTokens.contains("struct") || prevTokens.contains("union")
+
     // General case for function pointer typedefs and special types
-    if (pos > 0 && tokens[pos-1].str == "typedef" && Id.isValid(peek())) {
+    if (pos > 0 && (tokens[pos-1].str == "typedef" || inStructDecl) && Id.isValid(peek())) {
         // Check if the identifier looks like a function pointer typedef or special type
         // Using a more general approach that works for any library
         val identifier = peek()
@@ -1573,15 +1638,20 @@ fun ProgramParser.tryDeclarator(): Declarator? = tag {
         }
     }
 
-    // Special case for complex function pointer typedefs
-    if (pos > 0 && tokens[pos-1].str == "typedef") {
+    // Special case for complex function pointer typedefs or struct fields
+    if (pos > 0 && (tokens[pos-1].str == "typedef" || inStructDecl)) {
         // Check if we're in a complex function pointer typedef like:
         // typedef unsigned (*function_name)(void *, unsigned, unsigned);
+        // or a function pointer field in a struct like:
+        // alloc_func zalloc;
         val startPos = pos
 
         // Skip type specifiers (return type)
         var typeSpecifierFound = false
-        while (peek() == "unsigned" || peek() == "void" || peek() == "int" || peek() == "char" || peek() == "long" || peek() == "const") {
+        while (peek() == "unsigned" || peek() == "void" || peek() == "int" || peek() == "char" || 
+               peek() == "long" || peek() == "const" || peek() == "alloc_func" || peek() == "free_func" ||
+               peek().endsWith("_func") || peek().endsWith("_callback") || peek().endsWith("_fn") ||
+               peek().contains("_func_") || peek().contains("_callback_") || peek().contains("_fn_")) {
             read()
             typeSpecifierFound = true
         }
@@ -1617,8 +1687,13 @@ fun ProgramParser.tryDeclarator(): Declarator? = tag {
             }
 
             return@tag IdentifierDeclarator(IdDecl(funcName))
+        } else if (typeSpecifierFound && Id.isValid(peek())) {
+            // This might be a function pointer field in a struct like:
+            // alloc_func zalloc;
+            val id = IdentifierDeclarator(identifierDecl())
+            return@tag id
         } else {
-            // Rewind if this wasn't a function pointer typedef
+            // Rewind if this wasn't a function pointer typedef or field
             pos = startPos
         }
     }
