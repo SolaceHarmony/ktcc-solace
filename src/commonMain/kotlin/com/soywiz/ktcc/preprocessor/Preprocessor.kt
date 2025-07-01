@@ -122,6 +122,10 @@ class PreprocessorContext constructor(
                 //println("CALLED defined('$value') -> $result")
                 result
             }
+            "__has_feature" -> {
+                // Return false for all Clang features
+                false
+            }
             else -> super.callFunction(id, args)
         }
     }

@@ -41,6 +41,7 @@ open class Type {
 
         val VOID_PTR = PointerType(VOID, false)
         val CHAR_PTR = PointerType(CHAR, false)
+        val VA_LIST = PointerType(VOID, false) // Special type for va_list
 
         val UNKNOWN = UnknownType("unknown")
         val UNKNOWN_TYPEDEF = UnknownType("unknown_typedef")

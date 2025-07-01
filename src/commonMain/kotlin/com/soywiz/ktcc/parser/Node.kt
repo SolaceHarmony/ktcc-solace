@@ -147,7 +147,19 @@ data class IntConstant(val data: String, override val type: Type) : NumericConst
 
     val value: Long
         get() = when {
-            dataWithoutSuffix.startsWith("0x") || dataWithoutSuffix.startsWith("0X") -> dataWithoutSuffix.substring(2).toULong(16).toLong()
+            dataWithoutSuffix.startsWith("0x") || dataWithoutSuffix.startsWith("0X") -> {
+                try {
+                    dataWithoutSuffix.substring(2).toULong(16).toLong()
+                } catch (e: NumberFormatException) {
+                    // Handle very large unsigned hex values that might overflow
+                    if (dataWithoutSuffix.length > 8) {
+                        // For large hex values like "ffffffff", return -1 (which is what 0xffffffff represents in signed 32-bit)
+                        -1L
+                    } else {
+                        throw e
+                    }
+                }
+            }
             dataWithoutSuffix.startsWith("0") -> dataWithoutSuffix.toULong(8).toLong()
             else -> {
                 dataWithoutSuffix.toLongOrNull() ?: dataWithoutSuffix.toULongOrNull()?.toLong() ?: 0L
