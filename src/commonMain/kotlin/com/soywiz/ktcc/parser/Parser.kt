@@ -549,21 +549,30 @@ fun ProgramParser.tryPostFixExpression(): Expr? {
                         null
                     }
                 } else if (resolvedType is UnknownType) {
-                    // For unknown types, try to infer the field type based on common naming patterns
-                    val fieldType = when (id.name) {
+                    // For unknown types, infer field types based on common naming patterns
+                    when (id.name) {
                         // Common stream/buffer fields
-                        "total_in", "total_out", "avail_in", "avail_out" -> Type.ULONG
-                        "next_in", "next_out" -> PointerType(Type.UCHAR, false)
-                        "msg" -> PointerType(Type.CHAR, false)
-                        "state" -> PointerType(Type.VOID, false)
-                        "zalloc", "zfree" -> Type.VOID_PTR
-                        "opaque" -> Type.VOID_PTR
-                        "data_type", "adler", "reserved" -> Type.ULONG
+                        "total_in", "total_out", "avail_in", "avail_out", "total", "available", "avail" -> Type.ULONG
+                        "next_in", "next_out", "next", "input", "output", "in_buf", "out_buf" -> PointerType(Type.UCHAR, false)
+                        "msg", "message", "error_msg" -> PointerType(Type.CHAR, false)
+                        "state", "context", "ctx" -> PointerType(Type.VOID, false)
+                        "zalloc", "zfree", "alloc", "free", "malloc", "realloc" -> Type.VOID_PTR
+                        "opaque", "user_data", "private_data", "data_ptr" -> Type.VOID_PTR
+                        "data_type", "adler", "reserved", "type", "flags", "status", "mode" -> Type.ULONG
 
                         // Common file fields
-                        "size", "pos", "offset", "length" -> Type.ULONG
-                        "buffer", "data" -> PointerType(Type.UCHAR, false)
-                        "handle", "file" -> Type.VOID_PTR
+                        "size", "pos", "offset", "length", "count", "bytes", "num_bytes", "capacity" -> Type.ULONG
+                        "buffer", "data", "ptr", "buf", "memory", "mem", "content" -> PointerType(Type.UCHAR, false)
+                        "handle", "file", "stream", "fp", "descriptor", "fd", "socket" -> Type.VOID_PTR
+
+                        // Common counter and index fields
+                        "index", "idx", "position", "counter", "count", "num", "number" -> Type.INT
+
+                        // Common flag and status fields
+                        "flag", "flags", "status", "state", "mode", "type", "options" -> Type.INT
+
+                        // Common function pointer fields
+                        "callback", "handler", "func", "function", "proc", "procedure" -> Type.VOID_PTR
 
                         // Default to int for other fields
                         else -> {
@@ -571,7 +580,6 @@ fun ProgramParser.tryPostFixExpression(): Expr? {
                             Type.INT
                         }
                     }
-                    fieldType
                 } else {
                     reportWarning("Can't get field '${id.name}' from non struct type '$type'. Assumed as int.")
                     null
