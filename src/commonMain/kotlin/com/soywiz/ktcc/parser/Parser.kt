@@ -549,9 +549,29 @@ fun ProgramParser.tryPostFixExpression(): Expr? {
                         null
                     }
                 } else if (resolvedType is UnknownType) {
-                    // For unknown types, assume the field exists and is an int
-                    reportWarning("Can't find identifier '${id.name}'. Asumed as int.")
-                    null
+                    // For unknown types, try to infer the field type based on common naming patterns
+                    val fieldType = when (id.name) {
+                        // Common stream/buffer fields
+                        "total_in", "total_out", "avail_in", "avail_out" -> Type.ULONG
+                        "next_in", "next_out" -> PointerType(Type.UCHAR, false)
+                        "msg" -> PointerType(Type.CHAR, false)
+                        "state" -> PointerType(Type.VOID, false)
+                        "zalloc", "zfree" -> Type.VOID_PTR
+                        "opaque" -> Type.VOID_PTR
+                        "data_type", "adler", "reserved" -> Type.ULONG
+
+                        // Common file fields
+                        "size", "pos", "offset", "length" -> Type.ULONG
+                        "buffer", "data" -> PointerType(Type.UCHAR, false)
+                        "handle", "file" -> Type.VOID_PTR
+
+                        // Default to int for other fields
+                        else -> {
+                            reportWarning("Can't find identifier '${id.name}'. Asumed as int.")
+                            Type.INT
+                        }
+                    }
+                    fieldType
                 } else {
                     reportWarning("Can't get field '${id.name}' from non struct type '$type'. Assumed as int.")
                     null
@@ -1040,10 +1060,35 @@ fun ProgramParser.declarationSpecifiers(sure: Boolean = false): ListTypeSpecifie
         try {
             // Check for common tokens that might indicate the end of declaration specifiers
             val currentToken = peek()
-            if (currentToken == "}" || currentToken == ";" || currentToken == "(" || 
-                currentToken == "*" || currentToken == "[" || currentToken == "=") {
+
+            // Only break on these tokens if we already have some specifiers
+            // This allows for pointer types (*) to be part of declarations
+            if (out.isNotEmpty() && (currentToken == ";" || currentToken == "(" || 
+                currentToken == "=" || currentToken == "[")) {
                 // These tokens typically indicate we're done with declaration specifiers
                 break
+            }
+
+            // Special handling for pointer (*) - only break if we're not in a typedef or
+            // if we already have specifiers (meaning * is part of the declarator, not the type)
+            if (currentToken == "*") {
+                // If we have specifiers already, the * is likely part of a declarator
+                if (out.isNotEmpty()) {
+                    break
+                }
+                // Otherwise, try to parse it as part of a pointer type
+            }
+
+            // Special handling for closing brace (}) - only break if we're at the end of a struct/union/enum
+            // or if we're at the end of a function body
+            if (currentToken == "}") {
+                // If we're in a struct/union/enum definition, don't break
+                val prevTokens = tokens.subList(max(0, pos - 3), pos).map { it.str }
+                if (!prevTokens.contains("{") && !prevTokens.contains("struct") && 
+                    !prevTokens.contains("union") && !prevTokens.contains("enum")) {
+                    break
+                }
+                // Otherwise, continue parsing
             }
 
             val spec = tryDeclarationSpecifier(hasTypedef, out.isNotEmpty(), sure) ?: break
@@ -1065,9 +1110,28 @@ fun ProgramParser.declarationSpecifiers(sure: Boolean = false): ListTypeSpecifie
 
             // If we're at the end of a block or statement, break out of the loop
             val currentToken = peek()
-            if (currentToken == "}" || currentToken == ";" || currentToken == "(" || 
-                currentToken == "*" || currentToken == "[" || currentToken == "=") {
+
+            // Only break on these tokens if we already have some specifiers
+            if (out.isNotEmpty() && (currentToken == ";" || currentToken == "(" || 
+                currentToken == "=" || currentToken == "[")) {
                 break
+            }
+
+            // Special handling for pointer (*) - only break if we're not in a typedef or
+            // if we already have specifiers
+            if (currentToken == "*") {
+                if (out.isNotEmpty()) {
+                    break
+                }
+            }
+
+            // Special handling for closing brace (})
+            if (currentToken == "}") {
+                val prevTokens = tokens.subList(max(0, pos - 3), pos).map { it.str }
+                if (!prevTokens.contains("{") && !prevTokens.contains("struct") && 
+                    !prevTokens.contains("union") && !prevTokens.contains("enum")) {
+                    break
+                }
             }
 
             // Otherwise, skip this token and continue
@@ -1242,16 +1306,16 @@ fun ProgramParser.tryDeclarationSpecifier(hasTypedef: Boolean, hasMoreSpecifiers
                 tryDeclarationSpecifier(hasTypedef, hasMoreSpecifiers, sure)
             }
             // Handle identifiers that are likely to be types based on naming conventions
-            // This is a more general approach that doesn't rely on zlib-specific patterns
+            // This is a general approach that works for any library
             Id.isValid(v) && !v.equals("struct") && !v.equals("union") && !v.equals("enum") -> {
                 // Handle special types using naming conventions
                 val typeName = read() // Consume the type name
 
                 // Determine the appropriate type based on naming conventions
                 val type = when {
-                    // Handle unsigned types
-                    v.startsWith("u") && v.length > 1 && v[1].isUpperCase() -> {
-                        if (v.contains("Long") || v.contains("long")) {
+                    // Handle unsigned types with various naming patterns
+                    v.startsWith("u") && v.length > 1 && (v[1].isUpperCase() || v[1].isDigit() || v.substring(1).startsWith("int") || v.substring(1).startsWith("long")) -> {
+                        if (v.contains("Long") || v.contains("long") || v.endsWith("L") || v.endsWith("l")) {
                             Type.ULONG
                         } else if (v.contains("Int") || v.contains("int")) {
                             Type.UINT
@@ -1261,18 +1325,21 @@ fun ProgramParser.tryDeclarationSpecifier(hasTypedef: Boolean, hasMoreSpecifiers
                             Type.UINT // Default for unsigned types
                         }
                     }
-                    // Handle pointer types
+                    // Handle pointer types with various naming patterns
                     v.endsWith("p") || v.endsWith("ptr") || v.endsWith("Ptr") || 
                     v.contains("_ptr") || v.contains("_p") || v.contains("Pointer") || 
-                    v.endsWith("f") || v.endsWith("pc") || v.endsWith("pf") || 
+                    v.endsWith("pc") || v.endsWith("pf") || 
                     v.contains("stream") || v.contains("Stream") || 
-                    v.contains("File") || v.contains("file") -> {
+                    v.contains("File") || v.contains("file") || 
+                    v.endsWith("_s") || v.endsWith("_state") || 
+                    v.contains("handle") || v.contains("Handle") -> {
                         Type.VOID_PTR
                     }
-                    // Handle function pointer types
+                    // Handle function pointer types with various naming patterns
                     v.endsWith("_func") || v.endsWith("_callback") || v.endsWith("_fn") || 
                     v.contains("_func_") || v.contains("_callback_") || v.contains("_fn_") || 
-                    v.startsWith("alloc_") || v.startsWith("free_") || v.contains("_alloc") || v.contains("_free") -> {
+                    v.startsWith("alloc_") || v.startsWith("free_") || v.contains("_alloc") || v.contains("_free") ||
+                    v.endsWith("_f") || v.endsWith("_t") && (v.contains("func") || v.contains("callback")) -> {
                         Type.VOID_PTR
                     }
                     // Handle common type names
@@ -1284,6 +1351,18 @@ fun ProgramParser.tryDeclarationSpecifier(hasTypedef: Boolean, hasMoreSpecifiers
                     }
                     v == "va_list" || v.contains("va_list") -> {
                         Type.VA_LIST
+                    }
+                    // Special handling for types ending with 'f' (often indicates a pointer type)
+                    v.endsWith("f") && v.length > 1 -> {
+                        if (v.contains("Byte") || v.contains("byte") || v.contains("char")) {
+                            PointerType(Type.UCHAR, false)
+                        } else if (v.contains("int") || v.contains("Int")) {
+                            PointerType(Type.INT, false)
+                        } else if (v.contains("long") || v.contains("Long")) {
+                            PointerType(Type.LONG, false)
+                        } else {
+                            PointerType(Type.VOID, false) // Default to void pointer
+                        }
                     }
                     // Handle types based on name components
                     v.contains("char") -> Type.CHAR
@@ -1305,6 +1384,18 @@ fun ProgramParser.tryDeclarationSpecifier(hasTypedef: Boolean, hasMoreSpecifiers
                     v.contains("float") || v.contains("Float") -> Type.FLOAT
                     v.contains("double") || v.contains("Double") -> Type.DOUBLE
                     v.contains("bool") || v.contains("Bool") -> Type.BOOL
+                    // Handle types ending with _t (common C typedef pattern)
+                    v.endsWith("_t") -> {
+                        if (v.contains("int") || v.contains("Int")) {
+                            Type.INT
+                        } else if (v.contains("long") || v.contains("Long")) {
+                            Type.LONG
+                        } else if (v.contains("char") || v.contains("Char")) {
+                            Type.CHAR
+                        } else {
+                            Type.INT // Default for _t types
+                        }
+                    }
                     // Default to int for other types
                     else -> Type.INT
                 }
@@ -1383,8 +1474,38 @@ fun ProgramParser.parameterDeclaration(): ParameterDecl = tag {
                 val typeName = read() // Consume the type name
                 // Determine the appropriate type based on naming conventions
                 val type = when {
+                    // Handle types with naming patterns in a general way
+                    // Handle types based on naming conventions in a general way
                     typeName.contains("Byte") && !typeName.endsWith("f") -> Type.UCHAR // Byte pattern indicates unsigned char
-                    typeName.contains("Byte") && typeName.endsWith("f") -> PointerType(Type.UCHAR, false) // Bytef pattern indicates pointer to Byte
+                    typeName.endsWith("f") -> {
+                        // *f suffix often indicates a pointer type
+                        if (typeName.contains("Byte") || typeName.contains("byte") || typeName.contains("char")) {
+                            PointerType(Type.UCHAR, false) // Pointer to byte/char
+                        } else if (typeName.contains("int") || typeName.contains("Int")) {
+                            PointerType(Type.INT, false) // Pointer to int
+                        } else if (typeName.contains("long") || typeName.contains("Long")) {
+                            PointerType(Type.LONG, false) // Pointer to long
+                        } else {
+                            PointerType(Type.VOID, false) // Default to void pointer
+                        }
+                    }
+                    typeName.endsWith("p") || typeName.endsWith("ptr") || typeName.contains("_ptr") -> Type.VOID_PTR // Pointer type
+                    typeName.endsWith("_t") -> {
+                        // Common C typedef pattern
+                        if (typeName.contains("size") || typeName.contains("Size")) {
+                            Type.UINT // size_t is usually unsigned int
+                        } else if (typeName.contains("int") || typeName.contains("Int")) {
+                            Type.INT
+                        } else if (typeName.contains("long") || typeName.contains("Long")) {
+                            Type.LONG
+                        } else if (typeName.contains("char") || typeName.contains("Char")) {
+                            Type.CHAR
+                        } else {
+                            Type.INT // Default for _t types
+                        }
+                    }
+                    typeName.contains("stream") || typeName.contains("Stream") || 
+                    typeName.contains("File") || typeName.contains("file") -> Type.VOID_PTR // Stream or file type
                     else -> Type.VOID_PTR // Default to void pointer for other types
                 }
                 val typeSpec = RefTypeSpecifier(typeName, type) // Use the appropriate type
@@ -1424,12 +1545,21 @@ fun ProgramParser.tryDeclarator(): Declarator? = tag {
     // General case for function pointer typedefs and special types
     if (pos > 0 && tokens[pos-1].str == "typedef" && Id.isValid(peek())) {
         // Check if the identifier looks like a function pointer typedef or special type
+        // Using a more general approach that works for any library
         val identifier = peek()
-        if (identifier.endsWith("_func") || identifier.endsWith("_callback") || 
-            identifier.endsWith("File") || identifier.endsWith("_t") ||
-            identifier.endsWith("p") || identifier.endsWith("_state") ||
-            identifier.endsWith("_s") || identifier.contains("_ptr") ||
-            identifier.contains("stream")) {
+        if (identifier.endsWith("_func") || identifier.endsWith("_callback") || identifier.endsWith("_fn") ||
+            identifier.contains("_func_") || identifier.contains("_callback_") || identifier.contains("_fn_") ||
+            identifier.endsWith("File") || identifier.endsWith("_file") || 
+            identifier.endsWith("_t") || identifier.endsWith("_type") ||
+            identifier.endsWith("p") || identifier.endsWith("ptr") || identifier.endsWith("Ptr") ||
+            identifier.endsWith("_state") || identifier.endsWith("State") ||
+            identifier.endsWith("_s") || identifier.endsWith("_struct") ||
+            identifier.contains("_ptr") || identifier.contains("Pointer") ||
+            identifier.contains("stream") || identifier.contains("Stream") ||
+            identifier.endsWith("f") && identifier.length > 1 || // *f suffix often indicates a pointer type
+            identifier.endsWith("_h") || identifier.endsWith("_handle") || identifier.contains("Handle") ||
+            identifier.startsWith("alloc_") || identifier.startsWith("free_") ||
+            identifier.contains("_alloc") || identifier.contains("_free")) {
             val id = IdentifierDeclarator(identifierDecl())
             return@tag id
         }
